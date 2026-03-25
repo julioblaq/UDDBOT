@@ -1,6 +1,3 @@
-"""
-scraper.py — Firecrawl search-based scraper for hip hop drama content.
-"""
 import os
 import logging
 from firecrawl import FirecrawlApp
@@ -12,16 +9,13 @@ def _client():
     return FirecrawlApp(api_key=FIRECRAWL_API_KEY)
 
 def _parse_results(raw) -> list[dict]:
-    log.info(f"Firecrawl raw type: {type(raw)}, value: {str(raw)[:500]}")
     if isinstance(raw, list):
         items = raw
+    elif isinstance(raw, dict):
+        items = raw.get("data") or raw.get("results") or []
     elif hasattr(raw, "data"):
-        items = raw.data
-        log.info(f"Using .data, length: {len(items) if items else 0}")
-    elif hasattr(raw, "results"):
-        items = raw.results
+        items = raw.data or []
     else:
-        log.info(f"Unknown response type: {dir(raw)}")
         items = []
     stories = []
     for r in items:
@@ -35,7 +29,6 @@ def _parse_results(raw) -> list[dict]:
             snippet = getattr(r, "description", "") or getattr(r, "snippet", "")
         if title and url:
             stories.append({"title": title, "url": url, "snippet": str(snippet)[:200]})
-    log.info(f"Parsed {len(stories)} stories")
     return stories
 
 def scrape_site(site_key: str) -> list[dict]:
@@ -46,8 +39,7 @@ def scrape_site(site_key: str) -> list[dict]:
     }
     query = queries.get(site_key, "")
     try:
-        raw = _client().search(query)
-        return _parse_results(raw)
+        return _parse_results(_client().search(query))
     except Exception as e:
         log.error(f"Firecrawl search error ({site_key}): {e}")
         return []
@@ -57,8 +49,7 @@ def scrape_all() -> dict:
 
 def search_content(query: str) -> list[dict]:
     try:
-        raw = _client().search(f"{query} hip hop")
-        return _parse_results(raw)
+        return _parse_results(_client().search(f"{query} hip hop"))
     except Exception as e:
         log.error(f"Firecrawl search error: {e}")
         return []
