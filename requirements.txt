@@ -1,0 +1,4 @@
+python-telegram-bot==22.5
+firecrawl-py==1.13.4
+python-dotenv==1.2.1
+requests==2.32.5
