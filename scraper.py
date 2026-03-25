@@ -12,13 +12,16 @@ def _client():
     return FirecrawlApp(api_key=FIRECRAWL_API_KEY)
 
 def _parse_results(raw) -> list[dict]:
+    log.info(f"Firecrawl raw type: {type(raw)}, value: {str(raw)[:500]}")
     if isinstance(raw, list):
         items = raw
     elif hasattr(raw, "data"):
         items = raw.data
+        log.info(f"Using .data, length: {len(items) if items else 0}")
     elif hasattr(raw, "results"):
         items = raw.results
     else:
+        log.info(f"Unknown response type: {dir(raw)}")
         items = []
     stories = []
     for r in items:
@@ -32,15 +35,19 @@ def _parse_results(raw) -> list[dict]:
             snippet = getattr(r, "description", "") or getattr(r, "snippet", "")
         if title and url:
             stories.append({"title": title, "url": url, "snippet": str(snippet)[:200]})
+    log.info(f"Parsed {len(stories)} stories")
     return stories
 
 def scrape_site(site_key: str) -> list[dict]:
-    queries = {"shaderoom": "site:theshaderoom.com latest news", "worldstar": "site:worldstarhiphop.com", "allhiphop": "site:allhiphop.com news"}
-    query = queries.get(site_key)
-    if not query:
-        return []
+    queries = {
+        "shaderoom": "theshaderoom.com celebrity news latest",
+        "worldstar":  "worldstarhiphop.com latest videos",
+        "allhiphop":  "allhiphop.com hip hop news"
+    }
+    query = queries.get(site_key, "")
     try:
-        return _parse_results(_client().search(query))
+        raw = _client().search(query)
+        return _parse_results(raw)
     except Exception as e:
         log.error(f"Firecrawl search error ({site_key}): {e}")
         return []
@@ -50,7 +57,8 @@ def scrape_all() -> dict:
 
 def search_content(query: str) -> list[dict]:
     try:
-        return _parse_results(_client().search(f"{query} hip hop"))
+        raw = _client().search(f"{query} hip hop")
+        return _parse_results(raw)
     except Exception as e:
         log.error(f"Firecrawl search error: {e}")
         return []
