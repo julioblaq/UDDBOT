@@ -8,12 +8,6 @@ from firecrawl import FirecrawlApp
 log = logging.getLogger(__name__)
 FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY", "")
 
-SITE_QUERIES = {
-    "shaderoom": "site:theshaderoom.com",
-    "worldstar":  "site:worldstarhiphop.com",
-    "allhiphop":  "site:allhiphop.com",
-}
-
 def _client():
     return FirecrawlApp(api_key=FIRECRAWL_API_KEY)
 
@@ -41,11 +35,12 @@ def _parse_results(raw) -> list[dict]:
     return stories
 
 def scrape_site(site_key: str) -> list[dict]:
-    query = {"shaderoom": "site:theshaderoom.com", "worldstar": "site:worldstarhiphop.com", "allhiphop": "site:allhiphop.com"}.get(site_key)
+    queries = {"shaderoom": "site:theshaderoom.com latest news", "worldstar": "site:worldstarhiphop.com", "allhiphop": "site:allhiphop.com news"}
+    query = queries.get(site_key)
     if not query:
         return []
     try:
-        return _parse_results(_client().search(query, limit=8))
+        return _parse_results(_client().search(query))
     except Exception as e:
         log.error(f"Firecrawl search error ({site_key}): {e}")
         return []
@@ -55,7 +50,7 @@ def scrape_all() -> dict:
 
 def search_content(query: str) -> list[dict]:
     try:
-        return _parse_results(_client().search(f"{query} hip hop", limit=8))
+        return _parse_results(_client().search(f"{query} hip hop"))
     except Exception as e:
         log.error(f"Firecrawl search error: {e}")
         return []
