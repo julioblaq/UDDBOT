@@ -2,9 +2,14 @@
 """
 uddbot.py — UrbanDramaDetective Telegram bot.
 Scrapes WorldStar HipHop, The Shade Room, and AllHipHop for content ideas.
+
+Bot-to-bot: Listens for [READY] signals from @MindLyftBot in the
+YouTube Automation Hub group (-1003989231611) and distributes the
+YouTube link to configured channels.
 """
 
 import os
+import json
 import logging
 from dotenv import load_dotenv
 from telegram import Update
@@ -17,7 +22,18 @@ from scraper import scrape_site, scrape_all, search_content
 load_dotenv()
 logging.basicConfig(format="%(asctime)s [%(levelname)s] %(message)s", level=logging.INFO)
 log = logging.getLogger(__name__)
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+
+TELEGRAM_TOKEN     = os.getenv("TELEGRAM_BOT_TOKEN")
+JARVIS_GROUP_ID    = int(os.getenv("JARVIS_GROUP_CHAT_ID", "-1003989231611"))
+MINDLYFT_BOT_NAME  = "MindLyftBot"
+
+# Optional: personal chat to ping when a video drops
+OWNER_CHAT_ID      = os.getenv("OWNER_CHAT_ID")   # your personal Telegram chat ID
+
+
+# ---------------------------------------------------------------------------
+# Existing command handlers (unchanged)
+# ---------------------------------------------------------------------------
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -87,6 +103,9 @@ async def search_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown", disable_web_page_preview=True)
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Skip group messages that aren't [READY] signals — handled separately
+    if update.message.chat.id == JARVIS_GROUP_ID:
+        return
     query = update.message.text.strip()
     await update.message.reply_text(f"🔍 Searching for: *{query}*...", parse_mode="Markdown")
     results = search_content(query)
@@ -98,9 +117,103 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lines.append(f"• [{r['title'][:80]}]({r['url']})")
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown", disable_web_page_preview=True)
 
+
+# ---------------------------------------------------------------------------
+# Bot-to-bot: [READY] signal listener
+# ---------------------------------------------------------------------------
+
+# Simple in-memory dedup — prevents acting on the same message_id twice
+_seen_message_ids: set = set()
+
+
+def _parse_ready_payload(text: str) -> dict | None:
+    """
+    Parse a [READY] message from MindLyftBot.
+    Returns the payload dict or None if parsing fails.
+    """
+    if not text.startswith("[READY]"):
+        return None
+    try:
+        # Strip the [READY] prefix and any markdown code fences
+        raw = text.replace("[READY]", "").strip()
+        raw = raw.strip("`").strip()
+        if raw.startswith("json"):
+            raw = raw[4:].strip()
+        return json.loads(raw)
+    except (json.JSONDecodeError, ValueError) as e:
+        log.warning(f"Failed to parse [READY] payload: {e}")
+        return None
+
+
+async def handle_ready_signal(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Fires when a message arrives in the YouTube Automation Hub group.
+    Only acts on [READY] messages from @MindLyftBot.
+    """
+    msg = update.message
+    if not msg:
+        return
+
+    # Dedup by message_id
+    if msg.message_id in _seen_message_ids:
+        return
+    _seen_message_ids.add(msg.message_id)
+    # Keep set from growing forever
+    if len(_seen_message_ids) > 500:
+        _seen_message_ids.clear()
+
+    # Validate source — must be from MindLyftBot
+    sender = msg.from_user
+    if not sender or sender.username != MINDLYFT_BOT_NAME:
+        return
+
+    text = msg.text or ""
+    payload = _parse_ready_payload(text)
+    if not payload:
+        return
+
+    video_url = payload.get("video_url", "")
+    title     = payload.get("title", "New MindLyft video")
+
+    log.info(f"✅ [READY] received from MindLyftBot: {video_url}")
+
+    # ── Action 1: Acknowledge in the group ──
+    ack = (
+        f"✅ *[UDDBot ACK]*\n"
+        f"MindLyft video received and logged.\n\n"
+        f"🎥 [{title[:80]}]({video_url})"
+    )
+    await context.bot.send_message(
+        chat_id=JARVIS_GROUP_ID,
+        text=ack,
+        parse_mode="Markdown",
+        disable_web_page_preview=False,
+    )
+
+    # ── Action 2: Ping owner's personal chat (if configured) ──
+    if OWNER_CHAT_ID:
+        owner_msg = (
+            f"🔔 *MindLyft video just dropped!*\n\n"
+            f"📺 {title[:80]}\n"
+            f"🔗 {video_url}"
+        )
+        await context.bot.send_message(
+            chat_id=int(OWNER_CHAT_ID),
+            text=owner_msg,
+            parse_mode="Markdown",
+        )
+        log.info(f"📨 Owner notified at {OWNER_CHAT_ID}")
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
 def main():
     log.info("👀 UDDBot starting...")
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+
+    # Existing command handlers
     app.add_handler(CommandHandler("start",     start))
     app.add_handler(CommandHandler("help",      help_cmd))
     app.add_handler(CommandHandler("stories",   stories_cmd))
@@ -108,8 +221,20 @@ def main():
     app.add_handler(CommandHandler("worldstar", worldstar_cmd))
     app.add_handler(CommandHandler("allhiphop", allhiphop_cmd))
     app.add_handler(CommandHandler("search",    search_cmd))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    log.info("✅ UDDBot is live")
+
+    # Bot-to-bot: listen for [READY] signals in the Jarvis group
+    app.add_handler(MessageHandler(
+        filters.Chat(JARVIS_GROUP_ID) & filters.TEXT & ~filters.COMMAND,
+        handle_ready_signal,
+    ))
+
+    # DM fallback for regular users
+    app.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND & ~filters.Chat(JARVIS_GROUP_ID),
+        handle_message,
+    ))
+
+    log.info("✅ UDDBot is live — listening for [READY] signals from MindLyftBot")
     app.run_polling()
 
 if __name__ == "__main__":
